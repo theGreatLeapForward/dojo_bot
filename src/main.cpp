@@ -4,6 +4,10 @@
 #include <dpp/dpp.h>
 #include <iostream>
 #include <set>
+#include <ranges>
+
+using namespace std::chrono_literals;
+namespace ran = std::ranges;
 
 /*class message_collector_t : dpp::message_collector {
 public:
@@ -37,13 +41,22 @@ private:
     }
 };*/
 
+auto cur_msg_time() {
+    return duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() << 22;
+}
+
 struct msgs_and_ids {
-    dpp::cluster* owner;
+    explicit msgs_and_ids(::uint64_t id) : guild(id) {}
+
+    dpp::snowflake guild;
     dpp::cache<dpp::message> messages;
 
+    std::shared_mutex mi_mutex;
     std::set<dpp::snowflake> message_ids;
 
-    void insert(const dpp::message& msg) {
+    void mt_insert(const dpp::message &msg) {
+        auto lock = std::unique_lock(mi_mutex);
+
         if (this->message_ids.emplace(msg.id).second) {
             this->messages.store(new dpp::message{msg}); //move here has no benefit apparently
             //owner->log(dpp::ll_info, msg.content);
@@ -51,7 +64,7 @@ struct msgs_and_ids {
     }
 
     template<class Rep, class Period>
-    void gc(const std::chrono::duration<Rep, Period>& offset) {
+    void gc(const std::chrono::duration<Rep, Period> &offset) {
         const auto time = (std::chrono::system_clock::now() - offset).time_since_epoch();
         auto num = std::chrono::duration_cast<std::chrono::seconds>(time).count() << 22;
 
@@ -63,6 +76,10 @@ struct msgs_and_ids {
             }
             return false;
         });
+    }
+
+    msgs_and_ids(msgs_and_ids&& rhs)  noexcept {
+        this->guild = rhs.guild;
     }
 };
 
@@ -78,92 +95,84 @@ int main() {
         token >> BOT_TOKEN;
     }
 
-    const std::array<dpp::snowflake, 1> guild_ids {820855382472785921};
-
-    dpp::cluster bot(BOT_TOKEN, dpp::i_message_content | dpp::i_default_intents | dpp::i_guild_members);
-
-    msgs_and_ids messages{.owner = &bot};
+    dpp::cluster bot(BOT_TOKEN,
+                     dpp::i_message_content | dpp::i_default_intents | dpp::i_guild_members);
 
     bot.on_log(dpp::utility::cout_logger());
 
-    bot.on_guild_create([&guild_ids, &bot](const dpp::guild_create_t& event){
+    const std::array<dpp::snowflake, 1> guild_ids {820855382472785921};
+    std::unordered_map<dpp::snowflake, msgs_and_ids> guild_info;
+    for (auto id: guild_ids) {
+        guild_info.insert({id, msgs_and_ids{id}});
+    }
+
+    bot.on_guild_create([&guild_ids, &bot, &guild_info](const dpp::guild_create_t& event){
         const auto id = event.created->id;
-        if (std::find(guild_ids.cbegin(), guild_ids.cend(), id) == guild_ids.cend()) {
+        if ( ran::find(guild_ids, id) == guild_ids.cend()) {
             bot.current_user_leave_guild(id);
+        }
+        else {
+            auto channels = event.created->channels;
+            ran::sort(channels);
+            auto it = ran::unique(channels);
+            channels.erase(it.begin(), it.end());
+
+            const auto time = cur_msg_time();
+
+            for (auto channel_id: channels ) {
+                bot.messages_get(channel_id, 0, time, 0, 100,
+                                 [&bot, &messages = guild_info.at(id), &channel_id](const auto &msg_event) {
+                    if (msg_event.is_error()) {
+                        bot.log(dpp::ll_error, msg_event.get_error().message);
+                    }
+                    else {
+                        auto map = msg_event.template get<dpp::message_map>();
+                        if (!map.size()) {
+                            bot.log(dpp::ll_error, "No Messages Found for channel: " + std::to_string(channel_id));
+                        }
+                        for (const auto &[message_id, message]: map) {
+                            messages.mt_insert(message);
+                        }
+                    }
+                });
+            }
         }
     });
 
     //probably don't need to actually cache the messages, just keep a running total
-    bot.on_message_create([&bot, &messages](const dpp::message_create_t& event){
-        messages.insert(event.msg);
-
-        if (dpp::run_once<struct get_some_past_messages>()) {
-            bot.current_user_get_guilds([&bot, id = event.msg.id, &messages](const auto& event){
-                if (event.is_error()) {
-                    bot.log(dpp::ll_error, event.get_error().message);
-                }
-                else {
-                    bot.log(dpp::ll_info, "GUILDS GOT");
-
-                    auto guild_map = event.template get<dpp::guild_map>();
-                    bot.log(dpp::ll_debug, std::to_string(guild_map.size()));
-
-                    for (const auto& [guild_id, guild]: guild_map) {
-                        bot.log(dpp::ll_debug, "Guild channels count: " + std::to_string(guild.channels.size()));
-                        bot.log(dpp::ll_debug, "Guild channels count: " + std::to_string(bot.channels_get_sync(guild_id).size()));
-
-                        auto channels = guild.channels;
-                        channels.emplace_back(893595390241280022);
-
-                        for (auto channel_id: channels) {
-                            bot.log(dpp::ll_debug, std::to_string(channel_id));
-                            //bot.log(dpp::ll_info, "Setting up callback for channel " + std::to_string(channel_id));
-
-                            bot.messages_get(channel_id, 0, id, 0, 100, [&bot, &messages](const auto &event) {
-                                if (event.is_error()) {
-                                    bot.log(dpp::ll_error, event.get_error().message);
-                                } else {
-                                    bot.log(dpp::ll_info, "CHANNELS GOT");
-
-                                    for (const auto &[message_id, message]: event.template get<dpp::message_map>()) {
-                                        messages.insert(message);
-                                    }
-                                }
-                            });
-                        }
-                    }
-                }
-            });
-        }
+    bot.on_message_create([&guild_info](const dpp::message_create_t& event){
+        guild_info.at(event.msg.guild_id).mt_insert(event.msg);
     });
-
-    /*bot.on_message_delete([&messages](const dpp::message_delete_t& event){
-        //make this conditional?
-        messages.remove(messages.find(event.deleted->id));
-    });*/
 
     bot.on_slashcommand([](const dpp::slashcommand_t& event) {
         auto name = event.command.get_command_name();
         if (name == "ping") {
             event.reply("Pong!");
         }
+        else if (name == "debug") {
+
+        }
     });
 
-    /*std::promise<void> promise;
-    auto fut = promise.get_future();
-    auto collector = message_collector_t{&bot, &messages, &message_ids, std::move(promise)};*/
-
-    bot.on_ready([&bot, &messages](const dpp::ready_t& event) {
+    bot.on_ready([&bot, &guild_info](const dpp::ready_t& event) {
         if (dpp::run_once<struct register_bot_commands>()) {
+            using sc = dpp::slashcommand;
+
+            for (const auto& [command_id, command]: bot.global_commands_get_sync()) {
+                bot.global_command_delete(command_id);
+            }
+
             bot.global_bulk_command_create(std::vector{
-                dpp::slashcommand("ping", "Ping pong!", bot.me.id),
+                sc("ping", "Ping pong!", bot.me.id),
+                sc("debug", "dec", bot.me.id)
             });
 
             //garbage collection
-            bot.start_timer(dpp::timer_callback_t{[&messages](auto param){
-                messages.gc(std::chrono::weeks{1});
+            bot.start_timer(dpp::timer_callback_t{[&guild_info](auto param){
+                for (auto& [id, info]: guild_info) {
+                    info.gc(std::chrono::weeks{1});
+                }
             }}, duration_cast<std::chrono::seconds>(std::chrono::days{1}).count());
-
         }
     });
 
