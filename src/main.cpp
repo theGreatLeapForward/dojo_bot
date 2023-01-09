@@ -11,7 +11,12 @@
 using namespace std::chrono_literals;
 namespace ran = std::ranges;
 namespace chr = std::chrono;
-using sc_func = std::function<void(const dpp::slashcommand_t&)>;
+struct state_ref;
+using sc_func = std::function<void(const dpp::slashcommand_t&, state_ref&)>;
+using ucm_func = std::function<void(const dpp::user_context_menu_t&, state_ref&)>;
+using mcm_func = std::function<void(const dpp::message_context_menu_t&, state_ref&)>;
+using func_variant = std::variant<sc_func, ucm_func, mcm_func>;
+using dpp_msg = dpp::message;
 
 template<class Rep, class Period>
 auto cur_msg_time(const std::chrono::duration<Rep, Period>& offset = 0s) {
@@ -33,7 +38,8 @@ struct guild_msg_cache {
     std::multimap<dpp::snowflake, dpp::message*> user_msgs;
     std::multimap<dpp::snowflake, dpp::message*> channel_msgs;
 
-    guild_msg_cache(dpp::guild* guild, dpp::cluster* ptr, chr::seconds t = duration_cast<chr::seconds>(chr::weeks{1})) :
+    guild_msg_cache(dpp::guild* guild, dpp::cluster* ptr,
+                    chr::seconds t = duration_cast<chr::seconds>(chr::weeks{1})) :
     guild_id(guild->id), owner(ptr), save_time(t) {
 
         auto channels = guild->channels;
@@ -121,7 +127,8 @@ struct dojo_info {
         auto& members = dpp::find_guild(this->guild_id)->members;
         this->member_names_cache.resize(members.size()); //Apparently transform will literally index into rando ass memory
         //TODO: Count nicknames here as well
-        ran::transform(members.cbegin(), members.cend(), this->member_names_cache.begin(), [](auto& x){
+        ran::transform(members.cbegin(), members.cend(),
+                       this->member_names_cache.begin(), [](auto& x){
             auto pair = std::make_pair(x.first, x.second.get_user()->username);
             return pair;
         });
@@ -143,7 +150,8 @@ struct dojo_info {
         if (channel.is_category()) {
             if (!del) {
                 for (const auto & [usr_id, name]: this->member_names_cache) {
-                    if (std::regex_search(channel.name.cbegin(), channel.name.cend(), std::basic_regex(name))) {
+                    if (std::regex_search(channel.name.cbegin(), channel.name.cend(),
+                                          std::basic_regex(name))) {
                         auto lock = std::unique_lock(this->uc_mutex);
                         user_categories.emplace(usr_id, channel.id);
                         categories_to_users.emplace(channel.id, usr_id);
@@ -193,29 +201,85 @@ struct command_handler {
     dpp::cluster* owner;
     dpp::snowflake guild_id;
     std::vector<std::string> command_names;
-    std::unordered_map<std::string, std::pair<dpp::slashcommand,
-        sc_func>> cmd_map;
+    std::map<std::string, std::pair<dpp::slashcommand, sc_func>> sc_map;
+    std::map<std::string, std::pair<dpp::slashcommand, ucm_func>> ucm_map;
+    std::map<std::string, std::pair<dpp::slashcommand, mcm_func>> mcm_map;
 
     command_handler(dpp::cluster* owner,
                     dpp::snowflake guild_id,
-                    std::vector<std::pair<dpp::slashcommand, sc_func>>&& create)
+                    std::vector<std::pair<dpp::slashcommand, func_variant>>&& create)
                     : owner(owner), guild_id(guild_id) {
 
-        this->cmd_map.reserve(create.size());
         this->command_names.resize(create.size());
         for (auto& [sc, func]: create) {
             auto name = sc.name;
             this->command_names.push_back(name);
-            this->owner->guild_command_create(sc, this->guild_id);
-            this->cmd_map.insert({std::move(name), std::make_pair(std::move(sc), std::move(func))});
+            this->owner->guild_command_create(sc, this->guild_id);;
+
+            switch (sc.type) {
+                case dpp::ctxm_chat_input:
+                    this->sc_map.insert({std::move(name),
+                                         std::make_pair(std::move(sc),std::get<sc_func>(std::move(func)))});
+                    break;
+                case dpp::ctxm_user:
+                    this->ucm_map.insert({std::move(name),
+                                         std::make_pair(std::move(sc),std::get<ucm_func>(std::move(func)))});
+                    break;
+                case dpp::ctxm_message:
+                    this->mcm_map.insert({std::move(name),
+                                         std::make_pair(std::move(sc),std::get<mcm_func>(std::move(func)))});
+                    break;
+                default:
+                    owner->log(dpp::ll_error, fmt::format("Invalid context menu type: {}", sc.name));
+            }
         }
     }
 };
 
-void rolelist(const dpp::slashcommand_t& event) {
-    auto embed = dpp::embed{};
+struct state_ref {
+    dpp::cluster& bot;
+    std::promise<void>& exec_stop;
+};
 
+void rolelist(const dpp::slashcommand_t& event, state_ref&) {
+    auto role_id = std::get<dpp::snowflake>(event.get_parameter("role"));
+    auto embed = dpp::embed().
+            set_title(fmt::format("All members with role @{}", role_id));
 
+    auto& members = dpp::find_guild(event.command.guild_id)->members;
+    for (const auto& [member_id, member]: members) {
+        if (ran::find(member.roles, role_id) != member.roles.end()) {
+            embed.add_field(fmt::format("@{}\n", member.user_id), "todo", true);
+        }
+    }
+    event.reply(dpp_msg{event.command.channel_id, embed});
+}
+
+void user_activity(const dpp::slashcommand_t& event, state_ref& ref) {
+    auto embed = dpp::embed().set_title("Todo");
+
+    event.reply(dpp_msg{event.command.channel_id, embed});
+}
+
+void channel_activity(const dpp::slashcommand_t& event, state_ref& ref) {
+    auto embed = dpp::embed().set_title("Todo");
+
+    event.reply(dpp_msg{event.command.channel_id, embed});
+}
+
+void restart(const dpp::slashcommand_t& event, state_ref& ref) {
+    event.reply("Am die!");
+    ref.exec_stop.set_value();
+}
+
+void debug(const dpp::slashcommand_t& event, state_ref& ref) {
+    auto guild = dpp::find_guild(event.command.guild_id);
+    for (auto channel_id: guild->channels) {
+        auto channel = dpp::find_channel(channel_id);
+        ref.bot.log(dpp::ll_debug, channel->name);
+        ref.bot.log(dpp::ll_info, std::to_string(channel_id));
+    }
+    event.reply("Debug complete");
 }
 
 int main() {
@@ -235,6 +299,7 @@ int main() {
 
     bot.on_log(dpp::utility::cout_logger());
 
+    //ALL WRITES SHOULD BE DONE THROUGH mt_ PREFIXED FUNCTIONS
     const std::array<dpp::snowflake, 1> guild_ids {820855382472785921};
     std::unordered_map<dpp::snowflake, guild_msg_cache> msg_cache;
 
@@ -252,14 +317,24 @@ int main() {
         }
         else {
             if (dpp::run_once<struct guild_info_init>()) {
+
+                //Start message cache
                 msg_cache.emplace(std::piecewise_construct,
                                   std::forward_as_tuple(id), std::forward_as_tuple(event.created, &bot));
 
+                //Remove all the old commands
+                auto oldcommands = bot.guild_commands_get_sync(id);
+                for (const auto& [command_id, command]: oldcommands) {
+                    bot.guild_command_delete(id, command_id);
+                }
+
+                //Add the new commands
                 commands.emplace(std::piecewise_construct, std::forward_as_tuple(id), std::forward_as_tuple(&bot, id, std::vector {
-                        std::make_pair(sc{"rolelist", "get roles", bot.me.id}, sc_func{rolelist}),
+                        std::make_pair(sc{"rolelist", "get roles", bot.me.id}, func_variant {rolelist}),
                     }
                 ));
 
+                //Is the guild the dojo? We need to cache its special info as well
                 if (ran::find(dojo_ids, id) != dojo_ids.end()) {
                     dojo_infos.emplace(std::piecewise_construct,
                                        std::forward_as_tuple(id), std::forward_as_tuple(&bot, id));
@@ -274,7 +349,6 @@ int main() {
             (*it).second.mt_check_channel(*event.created);
         }
     });
-
     bot.on_channel_delete([&dojo_infos](const dpp::channel_delete_t& event){
         auto it = dojo_infos.find(event.deleting_guild->id);
         if (it != dojo_infos.end()) {
@@ -288,7 +362,6 @@ int main() {
             (*it).second.mt_member_insert(*event.added.get_user());
         }
     });
-
     bot.on_guild_member_remove([&dojo_infos](const dpp::guild_member_remove_t& event){
         auto it = dojo_infos.find(event.removing_guild->id);
         if (it != dojo_infos.end()) {
@@ -304,59 +377,17 @@ int main() {
     std::promise<void> exec_stop;
     auto fut = exec_stop.get_future();
 
-    bot.on_slashcommand([&bot, &msg_cache, &exec_stop](const dpp::slashcommand_t& event) {
-        using dmsg = dpp::message;
+    auto ref = state_ref{.bot = bot, .exec_stop = exec_stop};
 
-        auto name = event.command.get_command_name();
-        if (name == "user-activity") {
-            auto embed = dpp::embed().set_title("Todo");
-
-            event.reply(dmsg{event.command.channel_id, embed});
-        }
-        else if (name == "channel-activity") {
-            auto embed = dpp::embed().set_title("Todo");
-
-            event.reply(dmsg{event.command.channel_id, embed});
-        }
-        else if (name == "rolelist") {
-            auto role_id = std::get<dpp::snowflake>(event.get_parameter("role"));
-            auto embed = dpp::embed().
-                    set_title(fmt::format("All members with role @{}", role_id));
-
-            auto& members = dpp::find_guild(event.command.guild_id)->members;
-            for (const auto& [member_id, member]: members) {
-                if (ran::find(member.roles, role_id) != member.roles.end()) {
-                    embed.add_field(fmt::format("@{}\n", member.user_id), "todo", true);
-                }
-            }
-            event.reply(dmsg{event.command.channel_id, embed});
-        }
-        else if (name == "debug") {
-            auto guild = dpp::find_guild(event.command.guild_id);
-            for (auto channel_id: guild->channels) {
-                auto channel = dpp::find_channel(channel_id);
-                bot.log(dpp::ll_debug, channel->name);
-                bot.log(dpp::ll_info, std::to_string(channel_id));
-            }
-            event.reply("Debug complete");
-        }
-        else if (name == "restart") {
-            event.reply("Am Die");
-            exec_stop.set_value();
-        }
-        else if (name == "command") {
-            event.reply("Congratulations! You've found a discord bug! (This command should not exist)");
-        }
-        else {
-            bot.log(dpp::ll_error, "Invalid command: " + event.command.get_command_name());
-        }
+    bot.on_slashcommand([&commands, &ref](const dpp::slashcommand_t& event) {
+        commands.at(event.command.guild_id).sc_map.at(event.command.get_command_name()).second(event, ref);
     });
-
-    bot.on_user_context_menu([](const dpp::context_menu_t& event){
-
+    bot.on_user_context_menu([&commands, &ref](const dpp::user_context_menu_t& event){
+        commands.at(event.command.guild_id).ucm_map.at(event.command.get_command_name()).second(event, ref);
     });
-
-
+    bot.on_message_context_menu([&commands, &ref](const dpp::message_context_menu_t& event){
+        commands.at(event.command.guild_id).mcm_map.at(event.command.get_command_name()).second(event, ref);
+    });
 
     bot.on_ready([&bot](const dpp::ready_t& event) {
         if (dpp::run_once<struct register_bot_commands>()) {
