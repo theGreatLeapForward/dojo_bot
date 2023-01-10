@@ -16,7 +16,8 @@ using sc_func = std::function<void(const dpp::slashcommand_t&, state_ref&)>;
 using ucm_func = std::function<void(const dpp::user_context_menu_t&, state_ref&)>;
 using mcm_func = std::function<void(const dpp::message_context_menu_t&, state_ref&)>;
 using func_variant = std::variant<sc_func, ucm_func, mcm_func>;
-using dpp_msg = dpp::message;
+using dpp::snowflake;
+using dpp::message;
 
 template<class Rep, class Period>
 auto cur_msg_time(const std::chrono::duration<Rep, Period>& offset = 0s) {
@@ -27,16 +28,16 @@ auto cur_msg_time(const std::chrono::duration<Rep, Period>& offset = 0s) {
 struct guild_msg_cache {
     chr::seconds save_time;
     dpp::cluster* owner;
-    dpp::snowflake guild_id;
-    dpp::cache<dpp::message> messages;
+    snowflake guild_id;
+    dpp::cache<message> messages;
 
     std::shared_mutex mi_mutex;
-    std::set<dpp::snowflake> message_ids;
+    std::set<snowflake> message_ids;
 
-    //Perhaps these should be std::multimap<dpp::snowflake, dpp::message*>
+    //Perhaps these should be std::multimap<snowflake, message*>
     // as to reduce the cost of iterating over messages
-    std::multimap<dpp::snowflake, dpp::message*> user_msgs;
-    std::multimap<dpp::snowflake, dpp::message*> channel_msgs;
+    std::multimap<snowflake, message*> user_msgs;
+    std::multimap<snowflake, message*> channel_msgs;
 
     guild_msg_cache(dpp::guild* guild, dpp::cluster* ptr,
                     chr::seconds t = duration_cast<chr::seconds>(chr::weeks{1})) :
@@ -50,8 +51,8 @@ struct guild_msg_cache {
         const auto time = cur_msg_time(this->save_time);
 
         for (auto channel_id: channels ) {
-            ptr->messages_get(channel_id, 0, 0, time, 100,
-                              [this, channel_id](const auto &msg_event) {
+            this->owner->messages_get(channel_id, 0, 0, time, 100,
+                              [this](const auto &msg_event) {
                 if (msg_event.is_error()) {
                     this->owner->log(dpp::ll_error, msg_event.get_error().message);
                 }
@@ -73,18 +74,18 @@ struct guild_msg_cache {
         }}, duration_cast<std::chrono::seconds>(std::chrono::days{1}).count());
     }
 
-    void mt_insert(const dpp::message &msg) {
+    void mt_insert(const message &msg) {
         auto lock = std::unique_lock(mi_mutex);
 
         if (this->message_ids.emplace(msg.id).second) {
-            auto new_msg = new dpp::message{msg};
+            auto new_msg = new message{msg};
             this->messages.store(new_msg); //move here has no benefit apparently
             this->user_msgs.insert({msg.author.id, new_msg});
             this->channel_msgs.insert({msg.channel_id, new_msg});
         }
     }
 
-    void gc() {
+    void gc() { //TODO this doesn't work lol
         const auto time = cur_msg_time(this->save_time);
         const auto it = this->message_ids.lower_bound(time);
 
@@ -109,20 +110,24 @@ struct guild_msg_cache {
 
         this->message_ids.erase(this->message_ids.begin(), it);
     }
+
+    ~guild_msg_cache() {
+        auto lock = std::unique_lock{this->mi_mutex};
+    }
 };
 
 struct dojo_info {
     dpp::cluster* owner;
-    dpp::snowflake guild_id;
+    snowflake guild_id;
 
     std::shared_mutex uc_mutex;
-    std::multimap<dpp::snowflake, dpp::snowflake> user_categories;
-    std::map<dpp::snowflake, dpp::snowflake> categories_to_users;
+    std::multimap<snowflake, snowflake> user_categories;
+    std::map<snowflake, snowflake> categories_to_users;
 
     std::shared_mutex mnc_mutex;
-    std::vector<std::pair<dpp::snowflake, std::string>> member_names_cache;
+    std::vector<std::pair<snowflake, std::string>> member_names_cache;
 
-    dojo_info(dpp::cluster* owner, dpp::snowflake guild_id) : owner(owner), guild_id(guild_id) {
+    dojo_info(dpp::cluster* owner, snowflake guild_id) : owner(owner), guild_id(guild_id) {
 
         auto& members = dpp::find_guild(this->guild_id)->members;
         this->member_names_cache.resize(members.size()); //Apparently transform will literally index into rando ass memory
@@ -176,7 +181,7 @@ struct dojo_info {
         this->member_names_cache.emplace_back(user.id, user.username);
     }
 
-    void remove_member(const dpp::snowflake id) {
+    void remove_member(const snowflake id) {
         {
             auto lock = std::unique_lock(this->uc_mutex);
             this->categories_to_users.erase(this->user_categories.find(id));
@@ -190,7 +195,7 @@ struct dojo_info {
     }
 
     //USER IS FIRST AHAHW
-    void override(dpp::snowflake user_id, dpp::snowflake channel_id) {
+    void override(snowflake user_id, snowflake channel_id) {
         auto lock = std::unique_lock(this->uc_mutex);
         user_categories.emplace(user_id, channel_id);
         categories_to_users.emplace(channel_id, user_id);
@@ -199,14 +204,14 @@ struct dojo_info {
 
 struct command_handler {
     dpp::cluster* owner;
-    dpp::snowflake guild_id;
+    snowflake guild_id;
     std::vector<std::string> command_names;
     std::map<std::string, std::pair<dpp::slashcommand, sc_func>> sc_map;
     std::map<std::string, std::pair<dpp::slashcommand, ucm_func>> ucm_map;
     std::map<std::string, std::pair<dpp::slashcommand, mcm_func>> mcm_map;
 
     command_handler(dpp::cluster* owner,
-                    dpp::snowflake guild_id,
+                    snowflake guild_id,
                     std::vector<std::pair<dpp::slashcommand, func_variant>>&& create)
                     : owner(owner), guild_id(guild_id) {
 
@@ -214,7 +219,7 @@ struct command_handler {
         for (auto& [sc, func]: create) {
             auto name = sc.name;
             this->command_names.push_back(name);
-            this->owner->guild_command_create(sc, this->guild_id);;
+            this->owner->guild_command_create(sc, this->guild_id);
 
             switch (sc.type) {
                 case dpp::ctxm_chat_input:
@@ -239,32 +244,106 @@ struct command_handler {
 struct state_ref {
     dpp::cluster& bot;
     std::promise<void>& exec_stop;
+    const std::vector<snowflake>& dojo_ids;
+    std::unordered_map<dpp::snowflake, dojo_info>& dojo_infos;
 };
 
 void rolelist(const dpp::slashcommand_t& event, state_ref&) {
-    auto role_id = std::get<dpp::snowflake>(event.get_parameter("role"));
+    auto role_id = std::get<snowflake>(event.get_parameter("role"));
     auto embed = dpp::embed().
-            set_title(fmt::format("All members with role @{}", role_id));
+            set_title(fmt::format("All users with role {}", dpp::find_role(role_id)->get_mention()));
 
     auto& members = dpp::find_guild(event.command.guild_id)->members;
     for (const auto& [member_id, member]: members) {
         if (ran::find(member.roles, role_id) != member.roles.end()) {
-            embed.add_field(fmt::format("@{}\n", member.user_id), "todo", true);
+            embed.add_field(member.get_mention(), "todo", true);
         }
     }
-    event.reply(dpp_msg{event.command.channel_id, embed});
+    event.reply(message{event.command.channel_id, embed});
 }
 
-void user_activity(const dpp::slashcommand_t& event, state_ref& ref) {
+void sc_user_activity(const dpp::slashcommand_t& event, state_ref&) {
     auto embed = dpp::embed().set_title("Todo");
 
-    event.reply(dpp_msg{event.command.channel_id, embed});
+    event.reply(message{event.command.channel_id, embed});
 }
 
-void channel_activity(const dpp::slashcommand_t& event, state_ref& ref) {
+void sc_channel_activity(const dpp::slashcommand_t& event, state_ref& ref) {
+    event.thinking(true);
+    constexpr int preview_size = 5;
+    constexpr int max_msg_size = 100;
+
+    ref.bot.messages_get(event.command.channel_id, 0, 0, 0, preview_size,
+                         [&event, &ref](const dpp::confirmation_callback_t& conf){
+        if (!conf.is_error()) {
+            auto param = event.get_parameter("channel");
+            auto id = event.command.channel_id;
+            if (std::holds_alternative<snowflake>(param)) {
+                try {
+                    id = std::get<snowflake>(param);
+                }
+                catch (std::bad_variant_access& ex) {
+                    ref.bot.log(dpp::ll_error, ex.what());
+                }
+            }
+            auto channel = dpp::find_channel(id);
+            if (channel->is_category()) {
+                event.reply("Categories are not yet supported."); //TODO
+                return;
+            }
+
+            auto embed = dpp::embed().set_color(0xA020F0).
+                    set_title(fmt::format("Recent activity in channel {}", channel->get_mention()));
+
+            auto& parent_name = dpp::find_channel(channel->parent_id)->name;
+            auto it = ref.dojo_infos.find(event.command.guild_id);
+            if (it != ref.dojo_infos.end()) {
+                auto& cat = it->second.categories_to_users;
+                auto cat_it = cat.find(channel->parent_id);
+                if (cat_it != cat.end()) {
+                    embed.add_field("Channel ownership",
+                                    fmt::format("Channel in category {} owned by {}",
+                                                parent_name,
+                                                dpp::find_user(cat_it->second)->get_mention()));
+                }
+                else {
+                    embed.add_field("Channel ownership",
+                                    fmt::format("Channel in unowned category {}", parent_name));
+                }
+            }
+            else {
+                embed.add_field("Category", fmt::format("Channel in category {}", parent_name));
+            }
+
+            embed.add_field("Channel preview", fmt::format("Most recent messages sent in {}", channel->name));
+            //TODO message preview
+            auto map = conf.get<dpp::message_map>();
+            std::vector<message> out;
+            out.reserve(map.size());
+            ran::transform(std::move(map), out.begin(), [](auto& y){return y.second;});
+            ran::sort(out, [](auto& x, auto& y){return x.id > y.id;});
+            for (auto& msg: out) {
+                if (msg.content.length() > max_msg_size) {
+                    msg.content.resize(max_msg_size);
+                    msg.content += "...";
+                }
+
+                embed.add_field(fmt::format("From: {}", msg.author.get_mention()),
+                                    msg.content);
+            }
+
+            event.reply(message{id, embed});
+        }
+        else {
+            ref.bot.log(dpp::ll_error, conf.get_error().message);
+        }
+    });
+}
+
+void ctx_user_activity(const dpp::user_context_menu_t& event, state_ref&) {
     auto embed = dpp::embed().set_title("Todo");
 
-    event.reply(dpp_msg{event.command.channel_id, embed});
+    event.reply(message{event.command.channel_id, embed});
 }
 
 void restart(const dpp::slashcommand_t& event, state_ref& ref) {
@@ -300,16 +379,19 @@ int main() {
     bot.on_log(dpp::utility::cout_logger());
 
     //ALL WRITES SHOULD BE DONE THROUGH mt_ PREFIXED FUNCTIONS
-    const std::array<dpp::snowflake, 1> guild_ids {820855382472785921};
-    std::unordered_map<dpp::snowflake, guild_msg_cache> msg_cache;
+    const std::vector<snowflake> guild_ids {820855382472785921};
+    std::unordered_map<snowflake, guild_msg_cache> msg_cache;
 
-    const std::array<dpp::snowflake, 1> dojo_ids {820855382472785921};
-    std::unordered_map<dpp::snowflake, dojo_info> dojo_infos;
+    const std::vector<snowflake> dojo_ids {820855382472785921};
+    std::unordered_map<snowflake, dojo_info> dojo_infos;
 
-    std::unordered_map<dpp::snowflake, command_handler> commands;
+    std::unordered_map<snowflake, command_handler> commands;
 
     bot.on_guild_create([&guild_ids, &bot, &msg_cache, &dojo_ids, &dojo_infos, &commands](const dpp::guild_create_t& event){
         using sc = dpp::slashcommand;
+        using sc = dpp::slashcommand;
+        using co = dpp::command_option;
+        using p = dpp::permission;
 
         const auto id = event.created->id;
         if (ran::find(guild_ids, id) == guild_ids.cend()) {
@@ -330,7 +412,24 @@ int main() {
 
                 //Add the new commands
                 commands.emplace(std::piecewise_construct, std::forward_as_tuple(id), std::forward_as_tuple(&bot, id, std::vector {
-                        std::make_pair(sc{"rolelist", "get roles", bot.me.id}, func_variant {rolelist}),
+                        std::make_pair(sc{"rolelist", "get all users with specified role", bot.me.id}.
+                                add_option(co{dpp::co_role, "role", "role", true}),
+                                func_variant{rolelist}),
+                        std::make_pair(sc{"user-activity", "what are you up to?", bot.me.id}.
+                                add_option(co{dpp::co_user, "user", "user", false}),
+                                func_variant{sc_user_activity}),
+                        std::make_pair(sc{"channel-activity", "what is going on in here?", bot.me.id}.
+                                add_option(co{dpp::co_channel, "channel", "channel", false}),
+                                func_variant{sc_channel_activity}),
+                        std::make_pair(sc{"activity", "what are you up to?", bot.me.id}.
+                                set_type(dpp::ctxm_user),
+                                func_variant{ctx_user_activity}),
+                        std::make_pair(sc("debug", "running this a lot will crash the bot", bot.me.id).
+                                set_default_permissions(0),
+                                func_variant{debug}),
+                        std::make_pair(sc("stop", "[EMERGENCY]: stops the bot", bot.me.id).
+                                set_default_permissions(0),
+                                func_variant{restart}),
                     }
                 ));
 
@@ -346,26 +445,26 @@ int main() {
     bot.on_channel_create([&dojo_infos](const dpp::channel_create_t& event){
         auto it = dojo_infos.find(event.creating_guild->id);
         if (it != dojo_infos.end()) {
-            (*it).second.mt_check_channel(*event.created);
+            it->second.mt_check_channel(*event.created);
         }
     });
     bot.on_channel_delete([&dojo_infos](const dpp::channel_delete_t& event){
         auto it = dojo_infos.find(event.deleting_guild->id);
         if (it != dojo_infos.end()) {
-            (*it).second.mt_check_channel(*event.deleted, true);
+            it->second.mt_check_channel(*event.deleted, true);
         }
     });
 
     bot.on_guild_member_add([&dojo_infos](const dpp::guild_member_add_t& event){
         auto it = dojo_infos.find(event.adding_guild->id);
         if (it != dojo_infos.end()) {
-            (*it).second.mt_member_insert(*event.added.get_user());
+            it->second.mt_member_insert(*event.added.get_user());
         }
     });
     bot.on_guild_member_remove([&dojo_infos](const dpp::guild_member_remove_t& event){
         auto it = dojo_infos.find(event.removing_guild->id);
         if (it != dojo_infos.end()) {
-            (*it).second.remove_member(event.removed->id);
+            it->second.remove_member(event.removed->id);
         }
     });
 
@@ -377,7 +476,7 @@ int main() {
     std::promise<void> exec_stop;
     auto fut = exec_stop.get_future();
 
-    auto ref = state_ref{.bot = bot, .exec_stop = exec_stop};
+    auto ref = state_ref{.bot = bot, .exec_stop = exec_stop, .dojo_ids = dojo_ids, .dojo_infos = dojo_infos};
 
     bot.on_slashcommand([&commands, &ref](const dpp::slashcommand_t& event) {
         commands.at(event.command.guild_id).sc_map.at(event.command.get_command_name()).second(event, ref);
@@ -391,30 +490,15 @@ int main() {
 
     bot.on_ready([&bot](const dpp::ready_t& event) {
         if (dpp::run_once<struct register_bot_commands>()) {
-            using sc = dpp::slashcommand;
-            using co = dpp::command_option;
-            using p = dpp::permission;
 
             for (const auto& [command_id, command]: bot.global_commands_get_sync()) {
                 bot.global_command_delete(command_id);
             }
-
-            bot.global_bulk_command_create(std::vector {
-                sc("debug", "dec", bot.me.id).
-                    set_default_permissions(0),
-                sc("restart", "restarts the bot", bot.me.id).
-                    set_default_permissions(0),
-                sc("rolelist", "get all users with the specified role", bot.me.id).
-                    add_option(co{dpp::co_role, "role", "role", true}),
-                sc("user-activity", "what are you up to?", bot.me.id).
-                    add_option(co{dpp::co_user, "user", "user", false}),
-                sc("channel-activity", "what is going on in here?", bot.me.id).
-                    add_option(co{dpp::co_channel, "channel", "channel", false}),
-                sc().set_type(dpp::ctxm_user).set_name("Activity").set_application_id(bot.me.id)
-            });
         }
     });
 
     bot.start(dpp::st_return);
     fut.wait();
+
+
 }
