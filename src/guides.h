@@ -10,4 +10,8 @@
 
 using coc_vec = std::vector<dpp::command_option_choice>;
 
+struct guide {};
+
+constexpr guide g;
+
 coc_vec guilds_options() { return {}; }
