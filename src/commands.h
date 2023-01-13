@@ -20,7 +20,7 @@ using dpp::slashcommand_t;
 using dpp::user_context_menu_t;
 using dpp::message_context_menu_t;
 
-dpp::command_option add_choices(dpp::command_option option, coc_vec&& choices) {
+inline dpp::command_option add_choices(dpp::command_option option, coc_vec&& choices) {
     if (option.autocomplete) {
         throw dpp::logic_exception("Can't set autocomplete=true if choices exist in the command_option");
     }
@@ -34,7 +34,7 @@ void sc_rolelist(const slashcommand_t&, guild_state&);
 void sc_channel_activity(const slashcommand_t&, guild_state&);
 void sc_user_activity(const slashcommand_t&, guild_state&);
 void ctx_user_activity(const user_context_menu_t&, guild_state&);
-void sc_set_category(const slashcommand_t&, guild_state&);
+void sc_category(const slashcommand_t&, guild_state&);
 void sc_debug(const slashcommand_t&, guild_state&);
 void sc_restart(const slashcommand_t&, guild_state&);
 void sc_guides(const slashcommand_t&, guild_state&);
@@ -52,18 +52,20 @@ concept IsAnyOf = (std::same_as<T, U> || ...);
 
 template <typename ...Args>
 struct command_handler {
-    command_handler(dpp::cluster* owner_param, snowflake id_param, guild_state& ref_param)
+    command_handler(dpp::cluster* owner_param, snowflake id_param, guild_state* ref_param)
             : owner(owner_param), id(id_param), ref(ref_param) {
         owner->log(dpp::ll_info, fmt::format("command_handler created for {}", id));
     }
 
     dpp::cluster* const owner;
     const snowflake id;
-    guild_state& ref;
+    guild_state* ref;
 
     std::shared_mutex cmds_mutex;
     std::tuple<func_map<Args> ...> cmd_funcs;
     std::map<snowflake, slashcommand> commands;
+    slashcommand help = slashcommand{"help", "get help for the bot, or a specific command", id}.
+        add_option(dpp::command_option{dpp::co_string, "command", "[Optional] command to get help for"});
 
     std::atomic<bool> called = false;
 
@@ -80,19 +82,51 @@ struct command_handler {
                         add_option(co{dpp::co_user, "user", "user who's activity to check", false}),
                 sc_user_activity);
         add_command<user_context_menu_t>(
-                sc{"activity", "what are you up to?", id}.
+                sc{"activity", "", id}.
                         set_type(dpp::ctxm_user),
                 ctx_user_activity);
         add_command<slashcommand_t>(
                 sc{"channel-activity", "what is going on in here?", id}.
                         add_option(co{dpp::co_channel, "channel", "channel who's activity to check", false}),
                 sc_channel_activity);
+
+        auto ownership_add = co{dpp::co_sub_command, "add", "adds a user as an owner of a category"}.
+                add_option(co{dpp::co_channel, "category", "category to add user as owner of"}.
+                add_channel_type(dpp::CHANNEL_CATEGORY)).
+                add_option(co{dpp::co_user, "user", "user to add as owner of category"});
+
+        auto ownership_remove = co{dpp::co_sub_command, "remove", "removes a user as an owner of a category"}.
+                add_option(co{dpp::co_channel, "category", "category to remove user as owner of"}.
+                add_channel_type(dpp::CHANNEL_CATEGORY)).
+                add_option(co{dpp::co_user, "user", "user to remove as owner of category"});
+
+        auto ownership_clear_ch = co{dpp::co_sub_command, "clear-category", "clears a category of owner"}.
+                add_option(co{dpp::co_channel, "category", "category to clear of ownership"}.
+                add_channel_type(dpp::CHANNEL_CATEGORY));
+
+        auto ownership_clear_usr = co{dpp::co_sub_command, "clear-user", "clears a user of all category ownership"}.
+                add_option(co{dpp::co_user, "user", "user to clear ownership of categories"});
+
+        auto ownership = co{dpp::co_sub_command_group, "ownership", "modifies the ownership of a category"}.
+                add_option(ownership_add).add_option(ownership_remove).add_option(ownership_clear_usr).add_option(ownership_clear_ch);
+
+        auto archive_add = co{dpp::co_sub_command, "archive", "archives a category"}.
+                add_option(co{dpp::co_channel, "category", "category to archive"}).
+                add_channel_type(dpp::CHANNEL_CATEGORY);
+
+        auto archive_remove = co{dpp::co_sub_command, "un-archive", "un-archives a category"}.
+                add_option(co{dpp::co_channel, "category", "category to un-archive"}).
+                add_channel_type(dpp::CHANNEL_CATEGORY);
+
+        auto archive = co{dpp::co_sub_command_group, "archive", "modifies the archive-status of a category"}.
+                add_option(archive_add).add_option(archive_remove);
+
         add_command<slashcommand_t>(
-                sc{"set-category-owner", "sets a category as owned by a user", id}.
-                        add_option(co{dpp::co_user, "user", "user to set as owner, defaults to you", false}.
-                        add_channel_type(dpp::CHANNEL_CATEGORY)).
-                        set_default_permissions(dpp::p_manage_channels),
-                sc_set_category);
+                sc{"category", "category modification commands", id}.
+                        add_option(ownership).
+                        add_option(archive).
+                        set_default_permissions(dpp::p_manage_guild),
+                sc_category);
         add_command<slashcommand_t>(
                 sc("debug", "running this a lot will crash the bot", id).
                         set_default_permissions(dpp::p_administrator),
@@ -101,10 +135,6 @@ struct command_handler {
                 sc("stop", "[EMERGENCY]: stops the bot", id).
                         set_default_permissions(dpp::p_administrator),
                 sc_restart);
-        add_command<slashcommand_t>(
-                sc{"help", "help", id}.
-                        add_option(co{dpp::co_string, "command", "optional: specific command to get help for", false}),
-                sc_help);
         add_command<slashcommand_t>(
                 sc{"guides", "retrieves a guide", id}.
                         add_option(add_choices(co{dpp::co_string, "guide", "which guide to retrieve", true}, guilds_options())),
@@ -125,13 +155,11 @@ struct command_handler {
         if (!called) {
             called = true;
 
-            std::vector<slashcommand> cmds;
-            cmds.resize(commands.size());
-            std::transform(commands.cbegin(), commands.cend(), std::back_inserter(cmds), [](const auto& y){
-                return y.second;
-            });
-
-            owner->guild_bulk_command_create(cmds, id);
+            for (auto& [command_id, command]: commands) {
+                help.options[0].add_choice(dpp::command_option_choice{command.name, command.id});
+                owner->guild_command_create(command, id);
+            }
+            owner->guild_command_create(help, id);
         }
         else {
             throw dpp::logic_exception(fmt::format(
@@ -150,6 +178,7 @@ struct command_handler {
 
         if (!called) {
             owner->guild_command_create(cmd, id);
+            owner->guild_command_create(help, id); //update help
         }
         return *this;
     }
@@ -157,7 +186,7 @@ struct command_handler {
     template<typename T>
     requires IsAnyOf<T, Args...>
     inline void handle(const T& event) {
-        std::invoke(std::get<func_map<T>>(cmd_funcs).at(event.command.id), event, ref);
+        std::invoke(std::get<func_map<T>>(cmd_funcs).at(event.command.id), event, *ref);
     }
 };
 
@@ -165,13 +194,20 @@ using interaction_handler = command_handler<dpp::slashcommand_t,
         dpp::user_context_menu_t, dpp::message_context_menu_t>;
 
 struct guild_state {
+    guild_state(dpp::cluster& p_bot, std::promise<void>& exec_stop, dpp::guild* p_guild)
+    : bot(p_bot), exec_stop(exec_stop), guild_id(p_guild->id),
+    msg_cache(p_guild, &bot), command_handler(&bot, bot.me.id, this),
+    log_channel(&bot), welcomer(&bot) {}
+
     dpp::cluster& bot;
     std::promise<void>& exec_stop;
-    id_vec& guild_ids;
-
     snowflake guild_id;
     guild_user_msg_cache msg_cache;
     interaction_handler command_handler;
-    guild_logger log_channels;
-    std::optional<dojo_info> dojo_info;
+    guild_channel_sender log_channel;
+    guild_channel_sender welcomer;
+    std::optional<guild_dojo_info> dojo_info {};
 };
+
+void category_clear(snowflake, guild_state&);
+void user_category_clear(snowflake, guild_state&);

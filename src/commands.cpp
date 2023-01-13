@@ -119,19 +119,22 @@ void sc_restart(const dpp::slashcommand_t& event, guild_state& ref) {
 }
 
 void sc_debug(const dpp::slashcommand_t& event, guild_state& ref) {
-    auto guild = dpp::find_guild(event.command.guild_id);
-    for (auto channel_id: guild->channels) {
-        auto channel = dpp::find_channel(channel_id);
-        ref.bot.log(dpp::ll_debug, channel->name);
-        ref.bot.log(dpp::ll_info, std::to_string(channel_id));
+    if (event.command.member.user_id == DEV_ID) {
+        event.reply("Debug complete");
     }
-    event.reply("Debug complete");
+    else {
+        event.thinking(true);
+    }
 }
 
-void sc_set_category(const dpp::slashcommand_t& event, guild_state& ref) {
+void sc_category(const dpp::slashcommand_t& event, guild_state& ref) {
     event.thinking(true);
     //TODO
 }
+
+void category_clear(snowflake category, guild_state& ref) {}
+
+void user_category_clear(snowflake user, guild_state& ref) {}
 
 void sc_help(const dpp::slashcommand_t& event, guild_state& ref) {
     event.thinking(true);

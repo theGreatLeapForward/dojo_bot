@@ -58,8 +58,6 @@ struct guild_user_msg_cache {
                                            msg_event.get_error().message));
                 }
                 else {
-                    owner->log(dpp::ll_debug, "No error in call to messages_get");
-
                     auto map = msg_event.template get<dpp::message_map>();
                     for (const auto& [id, msg]:  map) {
                         mt_insert(msg);
@@ -69,30 +67,38 @@ struct guild_user_msg_cache {
         }
     }
 
-    void mt_insert(const message &msg) {
+    void mt_insert(const message &msg, bool update = false) {
         constexpr auto user_msg_cached_count = 5;
-
-        auto lock = std::unique_lock(mi_mutex);
 
         if (message_ids.emplace(msg.id).second) {
             auto new_msg = new message{msg};
             messages.store(new_msg); //move here has no benefit apparently
-            auto it = user_msgs.find(msg.author.id);
 
-            if (it == user_msgs.end()) {
-                it = user_msgs.emplace(std::piecewise_construct,
-                                       std::forward_as_tuple(msg.author.id),
-                                       std::forward_as_tuple(std::greater<>()));
-            }
-            it->second.push(msg.id);
+            if (!update) {
+                auto lock = std::unique_lock(mi_mutex);
 
-            if (it->second.size() > user_msg_cached_count) {
-                auto popped = it->second.top();
-                it->second.pop();
-                message_ids.erase(popped);
-                messages.remove(messages.find(popped));
+                auto it = user_msgs.find(msg.author.id);
+
+                if (it == user_msgs.end()) {
+                    it = user_msgs.emplace(std::piecewise_construct,
+                                           std::forward_as_tuple(msg.author.id),
+                                           std::forward_as_tuple(std::greater<>()));
+                }
+                it->second.push(msg.id);
+
+                if (it->second.size() > user_msg_cached_count) {
+                    auto popped = it->second.top();
+                    it->second.pop();
+                    message_ids.erase(popped);
+                    messages.remove(messages.find(popped));
+                }
             }
         }
+    }
+
+    void mt_remove_user(snowflake user) {
+        auto lock = std::unique_lock(mi_mutex);
+        user_msgs.erase(user);
     }
 
     ~guild_user_msg_cache() {
@@ -103,7 +109,9 @@ struct guild_user_msg_cache {
     }
 };
 
-struct dojo_info {
+struct guild_dojo_info {
+    guild_dojo_info(dpp::cluster* a, snowflake b) : owner(a), guild_id(b) {}
+
     dpp::cluster* const owner;
     const snowflake guild_id;
 
@@ -112,12 +120,17 @@ struct dojo_info {
     std::map<snowflake, snowflake> categories_to_users;
 };
 
-struct guild_logger {
-    dpp::cluster* owner;
-    snowflake channel;
+struct guild_channel_sender {
+    explicit guild_channel_sender(dpp::cluster* p_owner, snowflake p_channel = 0)
+    : owner(p_owner), channel(p_channel) {}
 
-    void log(message& msg, const dpp::command_completion_event_t& callback = dpp::utility::log_error()) const {
-        msg.channel_id = channel;
-        owner->message_create(msg, callback);
+    dpp::cluster* owner;
+    snowflake channel = 0;
+
+    void send(message& msg, const dpp::command_completion_event_t& callback = dpp::utility::log_error()) const {
+        if (channel) {
+            msg.channel_id = channel;
+            owner->message_create(msg, callback);
+        }
     }
 };

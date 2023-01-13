@@ -14,4 +14,4 @@ struct guide {};
 
 constexpr guide g;
 
-coc_vec guilds_options() { return {}; }
+inline coc_vec guilds_options() { return {}; }
