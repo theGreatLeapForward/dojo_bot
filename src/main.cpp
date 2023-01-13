@@ -75,12 +75,6 @@ int main() {
         }
     });
 
-    bot.on_channel_create([&states](const dpp::channel_create_t& event){
-        auto& info = states.at(event.creating_guild->id).dojo_info;
-        if (info.has_value()) {
-            info->mt_check_channel(*event.created);
-        }
-    });
     bot.on_channel_delete([&states](const dpp::channel_delete_t& event){
         auto& info = states.at(event.deleting_guild->id).dojo_info;
         if (info.has_value()) {
@@ -89,21 +83,11 @@ int main() {
     });
 
     bot.on_guild_member_add([&states](const dpp::guild_member_add_t& event){
-        auto& info = states.at(event.adding_guild->id).dojo_info;
-        if (info.has_value()) {
-            info->mt_member_insert(*event.added);
-        }
 
-        auto it = dojo_infos.find(event.adding_guild->id);
-        if (it != dojo_infos.end()) {
-            it->second.mt_member_insert(*event.added.get_user());
-        }
     });
+
     bot.on_guild_member_remove([&dojo_infos](const dpp::guild_member_remove_t& event){
-        auto it = dojo_infos.find(event.removing_guild->id);
-        if (it != dojo_infos.end()) {
-            it->second.mt_remove_member(event.removed->id);
-        }
+
     });
 
     //probably don't need to actually cache the messages, just keep a running total
