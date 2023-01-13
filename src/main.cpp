@@ -28,34 +28,32 @@ int main() {
 
     bot.on_log(dpp::utility::cout_logger());
 
+    std::unordered_map<snowflake, guild_state> states;
+    std::shared_mutex states_mut_mutex;
+
     id_vec guild_ids {820855382472785921};
-    gumc_map msg_cache;
-
     id_vec dojo_ids {820855382472785921};
-    dj_map dojo_infos;
-    ch_map command_handlers;
-#include <ranges>
-
-    gl_map log_channels;
 
     std::promise<void> exec_stop;
     auto fut = exec_stop.get_future();
 
-    std::shared_mutex id_map_mutex;
-    auto ref = state_ref{
-        .bot = bot, .exec_stop = exec_stop, .dojo_ids = dojo_ids, .guild_ids = guild_ids, .msg_cache = msg_cache,
-        .dojo_infos = dojo_infos, .command_handlers = command_handlers, .log_channels = log_channels};
-
-    bot.on_guild_create([ref, &id_map_mutex]
+    bot.on_guild_create([&states, &states_mut_mutex, &bot, &guild_ids, &dojo_ids, &exec_stop]
     (const dpp::guild_create_t& event){
-        auto lock = std::unique_lock(id_map_mutex);
+        auto lock = std::unique_lock(states_mut_mutex);
 
         const auto id = event.created->id;
-        if (ran::find(ref.guild_ids, id) == ref.guild_ids.cend()) {
-            ref.bot.current_user_leave_guild(id);
+        if (ran::find(guild_ids, id) == guild_ids.cend()) {
+            bot.current_user_leave_guild(id);
         }
         else {
             if (dpp::run_once<struct guild_info_init>()) {
+
+                guild_state state;
+
+                auto state = guild_state {
+                    .bot = bot, .exec_stop = exec_stop, .guild_ids = guild_ids,
+                    .guild_id = id, .msg_cache = guild_user_msg_cache{event.created, &bot}
+                };
 
                 //Start message cache
                 ref.msg_cache.emplace(std::piecewise_construct,
@@ -77,20 +75,25 @@ int main() {
         }
     });
 
-    bot.on_channel_create([&dojo_infos](const dpp::channel_create_t& event){
-        auto it = dojo_infos.find(event.creating_guild->id);
-        if (it != dojo_infos.end()) {
-            it->second.mt_check_channel(*event.created);
+    bot.on_channel_create([&states](const dpp::channel_create_t& event){
+        auto& info = states.at(event.creating_guild->id).dojo_info;
+        if (info.has_value()) {
+            info->mt_check_channel(*event.created);
         }
     });
-    bot.on_channel_delete([&dojo_infos](const dpp::channel_delete_t& event){
-        auto it = dojo_infos.find(event.deleting_guild->id);
-        if (it != dojo_infos.end()) {
-            it->second.mt_check_channel(*event.deleted, true);
+    bot.on_channel_delete([&states](const dpp::channel_delete_t& event){
+        auto& info = states.at(event.deleting_guild->id).dojo_info;
+        if (info.has_value()) {
+            info->mt_check_channel(*event.deleted, true);
         }
     });
 
-    bot.on_guild_member_add([&dojo_infos](const dpp::guild_member_add_t& event){
+    bot.on_guild_member_add([&states](const dpp::guild_member_add_t& event){
+        auto& info = states.at(event.adding_guild->id).dojo_info;
+        if (info.has_value()) {
+            info->mt_member_insert(*event.added);
+        }
+
         auto it = dojo_infos.find(event.adding_guild->id);
         if (it != dojo_infos.end()) {
             it->second.mt_member_insert(*event.added.get_user());

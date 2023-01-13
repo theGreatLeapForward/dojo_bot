@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <spdlog/fmt/fmt.h>
 #include <dpp/dpp.h>
 #include <ranges>
 #include <chrono>
@@ -18,9 +19,6 @@ namespace chr = std::chrono;
 using dpp::snowflake;
 using dpp::message;
 using id_vec = const std::vector<snowflake>;
-
-template<typename T>
-using id_map = std::unordered_map<snowflake, T>;
 
 template<class Rep, class Period>
 auto cur_msg_time(const std::chrono::duration<Rep, Period>& offset = 0s) {
@@ -53,21 +51,21 @@ struct guild_user_msg_cache {
 
         for (auto channel_id: channels ) {
             owner->messages_get(channel_id, 0, 0, cur_msg_time(save_time), 100,
-                                [this](const auto &msg_event) {
-                                    if (msg_event.is_error()) {
-                                        owner->log(dpp::ll_error,
-                                                   fmt::format("{}, Source: guild_user_msg_cache call to messages_get",
-                                                               msg_event.get_error().message));
-                                    }
-                                    else {
-                                        owner->log(dpp::ll_debug, "No error in call to messages_get");
+            [this](const auto &msg_event) {
+                if (msg_event.is_error()) {
+                    owner->log(dpp::ll_error,
+                               fmt::format("{}, Source: guild_user_msg_cache call to messages_get",
+                                           msg_event.get_error().message));
+                }
+                else {
+                    owner->log(dpp::ll_debug, "No error in call to messages_get");
 
-                                        auto map = msg_event.template get<dpp::message_map>();
-                                        for (const auto& [id, msg]:  map) {
-                                            mt_insert(msg);
-                                        }
-                                    }
-                                });
+                    auto map = msg_event.template get<dpp::message_map>();
+                    for (const auto& [id, msg]:  map) {
+                        mt_insert(msg);
+                    }
+                }
+            });
         }
     }
 
@@ -104,8 +102,6 @@ struct guild_user_msg_cache {
         }
     }
 };
-
-using gumc_map = id_map<guild_user_msg_cache>;
 
 struct dojo_info {
     dpp::cluster* const owner;
@@ -197,8 +193,6 @@ public:
     }
 };
 
-using dj_map = id_map<dojo_info>;
-
 struct guild_logger {
     dpp::cluster* owner;
     snowflake channel;
@@ -207,22 +201,4 @@ struct guild_logger {
         msg.channel_id = channel;
         owner->message_create(msg, callback);
     }
-};
-
-using gl_map = id_map<guild_logger>;
-
-template<typename ...Args>
-struct command_handler;
-using interaction_handler = command_handler<dpp::slashcommand_t, dpp::user_context_menu_t, dpp::message_context_menu_t>;
-using ch_map = id_map<interaction_handler>;
-
-struct state_ref {
-    dpp::cluster& bot;
-    std::promise<void>& exec_stop;
-    id_vec& dojo_ids;
-    id_vec& guild_ids;
-    gumc_map& msg_cache;
-    dj_map& dojo_infos;
-    ch_map& command_handlers;
-    gl_map& log_channels;
 };
