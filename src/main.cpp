@@ -27,6 +27,7 @@ int main() {
                      dpp::i_message_content | dpp::i_default_intents | dpp::i_guild_members);
 
     bot.on_log(dpp::utility::cout_logger());
+    bot.me.id = 988671935577718784;
 
     std::unordered_map<snowflake, guild_state> states;
     std::shared_mutex states_mut_mutex;
@@ -39,6 +40,7 @@ int main() {
 
     bot.on_guild_create([&states, &states_mut_mutex, &bot, &guild_ids, &dojo_ids, &exec_stop]
     (const dpp::guild_create_t& event){
+
         const auto id = event.created->id;
         if (ran::find(guild_ids, id) == guild_ids.cend()) {
             bot.current_user_leave_guild(id);
@@ -53,9 +55,9 @@ int main() {
 
             if (ran::find(dojo_ids, id) != dojo_ids.end()) {
                 state.dojo_info.emplace(&bot, id);
-                state.command_handler.dojo_cmds();
+                state.cmd_handler.dojo_cmds();
             }
-            state.command_handler.default_cmds().register_cmds();
+            state.cmd_handler.default_cmds().register_help();
         }
     });
 
@@ -79,21 +81,20 @@ int main() {
     });
 
     bot.on_message_update([&states](const dpp::message_update_t& event){
-        states.at(event.msg.guild_id).msg_cache.mt_insert(event.msg), true;
+        states.at(event.msg.guild_id).msg_cache.mt_insert(event.msg);
     });
 
     bot.on_slashcommand([&states](const slashcommand_t& event) {
-        states.at(event.command.guild_id).command_handler.handle<slashcommand_t>(event);
+        states.at(event.command.guild_id).cmd_handler.handle<slashcommand_t>(event);
     });
     bot.on_user_context_menu([&states](const user_context_menu_t& event){
-        states.at(event.command.guild_id).command_handler.handle<user_context_menu_t>(event);
+        states.at(event.command.guild_id).cmd_handler.handle<user_context_menu_t>(event);
     });
     bot.on_message_context_menu([&states](const message_context_menu_t& event){
-        states.at(event.command.guild_id).command_handler.handle<message_context_menu_t>(event);
+        states.at(event.command.guild_id).cmd_handler.handle<message_context_menu_t>(event);
     });
 
-    bot.on_ready([&bot](const dpp::ready_t& event){
-
+    bot.on_ready([](const dpp::ready_t&){
     });
 
     bot.start(dpp::st_return);

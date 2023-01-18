@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 # Project name, version and description
-project(discord-bot VERSION 1.0 DESCRIPTION "A discord bot")
+project(dojo-bot VERSION 1.0 DESCRIPTION "A discord bot")
 
 # Add DPP as dependency
 add_subdirectory(libs/dpp)

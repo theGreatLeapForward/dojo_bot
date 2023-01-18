@@ -109,6 +109,32 @@ struct guild_user_msg_cache {
     }
 };
 
+//The discriminators are the role ids for the obfs_dojo roles associated with these
+enum Dojo_Belt: ::uint64_t {
+    White = 918327547450765352,
+    Yellow = 929080104754245674,
+    Green = 929080211205668894,
+    Blue = 1036453240608411678,
+    Red = 929080487736119346,
+    Black = 929080635904110663
+};
+
+constexpr Dojo_Belt plus_one (Dojo_Belt belt) {
+    switch (belt) {
+        case White:
+            return Yellow;
+        case Yellow:
+            return Green;
+        case Green:
+            return Blue;
+        case Blue:
+            return Red;
+        case Red:
+        case Black:
+            return Black;
+    }
+}
+
 struct guild_dojo_info {
     guild_dojo_info(dpp::cluster* a, snowflake b) : owner(a), guild_id(b) {}
 
@@ -118,6 +144,7 @@ struct guild_dojo_info {
     std::shared_mutex uc_mutex;
     std::multimap<snowflake, snowflake> user_categories;
     std::map<snowflake, snowflake> categories_to_users;
+
 };
 
 struct guild_channel_sender {

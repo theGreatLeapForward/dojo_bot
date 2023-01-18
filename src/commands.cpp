@@ -5,6 +5,7 @@
 #include "commands.h"
 
 const static snowflake DEV_ID = 762155750403342358;
+constexpr auto max_msg_size = 100;
 
 void sc_rolelist(const dpp::slashcommand_t& event, guild_state&) {
     auto role_id = std::get<snowflake>(event.get_parameter("role"));
@@ -20,8 +21,24 @@ void sc_rolelist(const dpp::slashcommand_t& event, guild_state&) {
     event.reply(message{event.command.channel_id, embed});
 }
 
-void sc_user_activity(const dpp::slashcommand_t& event, guild_state&) {
+void sc_user_activity(const dpp::slashcommand_t& event, guild_state& ref) {
     auto embed = dpp::embed().set_title("Todo");
+
+    embed.add_field("Recent Activity", fmt::format("Most recent messages sent by {}", event.command.member.nickname));
+
+    auto queue = ref.msg_cache.user_msgs.find(event.command.member.user_id)->second;
+    snowflake k;
+    for (std::size_t i = 0; i < queue.size(); k = queue.top()) {
+        auto msg = *ref.msg_cache.messages.find(k);
+
+        if (msg.content.length() > max_msg_size) {
+            msg.content.resize(max_msg_size - 3);
+            msg.content += "...";
+        }
+
+        embed.add_field(fmt::format("In: {}", dpp::find_channel(msg.channel_id)->get_mention()),
+                        msg.content, true);
+    }
 
     event.reply(message{event.command.channel_id, embed});
     //TODO
@@ -30,7 +47,8 @@ void sc_user_activity(const dpp::slashcommand_t& event, guild_state&) {
 void sc_channel_activity(const dpp::slashcommand_t& event, guild_state& ref) {
     event.thinking(true);
     constexpr int preview_size = 5;
-    constexpr int max_msg_size = 100;
+
+    //TOOD: should be using the param id not the command channel id
 
     ref.bot.messages_get(event.command.channel_id, 0, 0, 0, preview_size,
         [&event, &ref](const dpp::confirmation_callback_t& conf){
@@ -84,12 +102,12 @@ void sc_channel_activity(const dpp::slashcommand_t& event, guild_state& ref) {
                 ran::sort(out, [](auto& x, auto& y){return x.id > y.id;});
                 for (auto& msg: out) {
                     if (msg.content.length() > max_msg_size) {
-                        msg.content.resize(max_msg_size);
+                        msg.content.resize(max_msg_size - 3);
                         msg.content += "...";
                     }
 
                     embed.add_field(fmt::format("From: {}", msg.author.get_mention()),
-                                    msg.content);
+                                    msg.content, true);
                 }
 
                 event.reply(message{id, embed});
@@ -132,7 +150,8 @@ void sc_category(const dpp::slashcommand_t& event, guild_state& ref) {
     //TODO
 }
 
-void category_clear(snowflake category, guild_state& ref) {}
+void category_clear(snowflake category, guild_state& ref) {
+}
 
 void user_category_clear(snowflake user, guild_state& ref) {}
 
@@ -150,3 +169,8 @@ void sc_scorecounting(const dpp::slashcommand_t& event, guild_state& ref) {
     event.thinking(true);
     //TODO
 }
+
+void sc_belt(const slashcommand_t &event, guild_state &) {
+    event.thinking(true);
+}
+
