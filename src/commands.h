@@ -41,9 +41,10 @@ void sc_guides(const slashcommand_t&, guild_state&);
 void sc_scorecounting(const slashcommand_t&, guild_state&);
 void sc_help(const slashcommand_t&, guild_state&);
 void sc_belt(const slashcommand_t&, guild_state&);
+void ctx_belt_upgrade(const user_context_menu_t&, guild_state&);
 
 template<typename T>
-using cmd_func = std::function<void(const T&, guild_state&)>;
+using cmd_func = std::function<void(T, guild_state&)>;
 
 template<typename T>
 using func_map = std::unordered_map<std::string, cmd_func<T>>;
@@ -74,6 +75,8 @@ struct command_handler {
             add_option(dpp::command_option{dpp::co_string, "command", "[Optional] command to get help for"});
     std::tuple<func_map<Args> ...> cmd_funcs;
 
+    std::vector<slashcommand> bulk_register;
+
     command_handler& default_cmds() {
         using sc = slashcommand;
         using co = dpp::command_option;
@@ -84,7 +87,7 @@ struct command_handler {
                 sc_rolelist);
         add_command<slashcommand_t>(
                 sc{"user-activity", "what are you up to?", owner->me.id}.
-                        add_option(co{dpp::co_user, "user", "user who's activity to check", false}),
+                        add_option(co{dpp::co_user, "user", "user who's activity to check. Defaults to you", false}),
                 sc_user_activity);
         add_command<user_context_menu_t>(
                 sc{"activity", "", owner->me.id}.
@@ -92,7 +95,8 @@ struct command_handler {
                 ctx_user_activity);
         add_command<slashcommand_t>(
                 sc{"channel-activity", "what is going on in here?", owner->me.id}.
-                        add_option(co{dpp::co_channel, "channel", "channel who's activity to check", false}),
+                        add_option(co{dpp::co_channel, "channel", "channel who's activity to check. Defaults to the current channel", false}.
+                        add_channel_type(dpp::CHANNEL_TEXT)),
                 sc_channel_activity);
 
         add_command<slashcommand_t>(
@@ -114,33 +118,34 @@ struct command_handler {
     command_handler &dojo_cmds() {
         using sc = slashcommand;
         using co = dpp::command_option;
+        using coc = dpp::command_option_choice;
 
         auto ownership_add = co{dpp::co_sub_command, "add", "adds a user as an owner of a category"}.
-                add_option(co{dpp::co_channel, "category", "category to add user as owner of"}.
+                add_option(co{dpp::co_channel, "category", "category to add user as owner of", true}.
                 add_channel_type(dpp::CHANNEL_CATEGORY)).
-                add_option(co{dpp::co_user, "user", "user to add as owner of category"});
+                add_option(co{dpp::co_user, "user", "user to add as owner of category", true});
 
         auto ownership_remove = co{dpp::co_sub_command, "remove", "removes a user as an owner of a category"}.
-                add_option(co{dpp::co_channel, "category", "category to remove user as owner of"}.
+                add_option(co{dpp::co_channel, "category", "category to remove user as owner of", true}.
                 add_channel_type(dpp::CHANNEL_CATEGORY)).
-                add_option(co{dpp::co_user, "user", "user to remove as owner of category"});
+                add_option(co{dpp::co_user, "user", "user to remove as owner of category", true});
 
         auto ownership_clear_ch = co{dpp::co_sub_command, "clear-category", "clears a category of owner"}.
-                add_option(co{dpp::co_channel, "category", "category to clear of ownership"}.
+                add_option(co{dpp::co_channel, "category", "category to clear of ownership", true}.
                 add_channel_type(dpp::CHANNEL_CATEGORY));
 
         auto ownership_clear_usr = co{dpp::co_sub_command, "clear-user", "clears a user of all category ownership"}.
-                add_option(co{dpp::co_user, "user", "user to clear ownership of categories"});
+                add_option(co{dpp::co_user, "user", "user to clear ownership of categories", true});
 
         auto ownership = co{dpp::co_sub_command_group, "ownership", "modifies the ownership of a category"}.
                 add_option(ownership_add).add_option(ownership_remove).add_option(ownership_clear_usr).add_option(ownership_clear_ch);
 
         auto archive_add = co{dpp::co_sub_command, "archive", "archives a category"}.
-                add_option(co{dpp::co_channel, "category", "category to archive"}).
+                add_option(co{dpp::co_channel, "category", "category to archive", true}).
                 add_channel_type(dpp::CHANNEL_CATEGORY);
 
         auto archive_remove = co{dpp::co_sub_command, "un-archive", "un-archives a category"}.
-                add_option(co{dpp::co_channel, "category", "category to un-archive"}).
+                add_option(co{dpp::co_channel, "category", "category to un-archive", true}).
                 add_channel_type(dpp::CHANNEL_CATEGORY);
 
         auto archive = co{dpp::co_sub_command_group, "archive", "modifies the archive-status of a category"}.
@@ -153,16 +158,58 @@ struct command_handler {
                         set_default_permissions(dpp::p_manage_guild),
                 sc_category);
 
-        add_command<slashcommand_t>(sc{"score-count-helper", "score counting help", owner->me.id}, sc_scorecounting);
+        auto start = co{dpp::co_sub_command, "start", "start a new score counting helper for a game"}.
+                add_option(co{dpp::co_string, "id", "the id of the game. Used for later lookup. Can be whatever you want as long as it is unique.", true}).
+                add_option(co{dpp::co_string, "name", "[Optional] the name of the game"});
 
-        add_command<slashcommand_t>(sc{"belt", "belt management commands", owner->me.id}, sc_belt);
+        auto finish = co{dpp::co_sub_command, "finish", "mark a score counting helper game as finished"}.
+                add_option(co{dpp::co_string, "id", "the id of the game to mark as finished", true});
+
+        add_command<slashcommand_t>(
+                sc{"score-count-helper", "score counting help", owner->me.id}.
+                add_option(start).
+                add_option(finish),
+                sc_scorecounting);
+
+        add_command<slashcommand_t>(
+                sc{"sc", "score counting help", owner->me.id}.
+                add_option(start).
+                add_option(finish),
+                sc_scorecounting);
+
+        auto award = co{dpp::co_sub_command, "award", "award a belt to a user. Removes previous belts, if any"}.
+                add_option(co{dpp::co_user, "user", "the user to award the belt to", true}).
+                add_option(add_choices(co{dpp::co_string, "belt", "The belt to award. Defaults to increasing the user's \"belt level\" by 1", false}, belt_options()));
+
+        auto revoke = co{dpp::co_sub_command, "revoke", "revokes a user's belt"}.
+                add_option(co{dpp::co_user, "user", "the user to revoke the belt from", true});
+
+        auto requirements = co{dpp::co_sub_command, "requirements", "gets the requirements for a specific belt color"}.
+                add_option(add_choices(co{dpp::co_string, "color", "the color of the belt", true}, belt_options()));
+
+        add_command<slashcommand_t>(
+                sc{"belt", "belt management commands", owner->me.id}.
+                add_option(award).
+                add_option(revoke).
+                        add_option(requirements).
+                set_default_permissions(dpp::p_manage_roles),
+                sc_belt);
+
+        add_command<user_context_menu_t>(sc{"belt-upgrade", "", owner->me.id}.
+            set_type(dpp::ctxm_user),
+            ctx_belt_upgrade);
 
         return *this;
     }
 
-    //This should be called after other funcs
-    void register_help() {
+    //This should be called after other funcs. Clears the list of registered commands to allow to b called multiple times
+    void create() {
+        owner->guild_bulk_command_create(bulk_register, id);
         owner->guild_command_create(help, id);
+        {
+            auto lock = std::unique_lock(cmds_mutex);
+            bulk_register.clear();
+        }
     }
 
     template<typename T>
@@ -173,8 +220,8 @@ struct command_handler {
             {
                 auto lock = std::unique_lock(cmds_mutex);
                 help.options[0].add_choice(dpp::command_option_choice{cmd.name, cmd.id});
+                bulk_register.emplace_back(std::move(cmd));
             }
-            owner->guild_command_create(cmd, id);
         }
 
         return *this;
@@ -187,17 +234,16 @@ struct command_handler {
     }
 };
 
-struct guild_state {
+struct guild_state : dpp::managed {
     guild_state(dpp::cluster& p_bot, std::promise<void>& exec_stop, dpp::guild* p_guild)
-    : bot(p_bot), exec_stop(exec_stop), guild_id(p_guild->id),
-      msg_cache(p_guild, &bot), cmd_handler(&bot, guild_id, this),
+    : dpp::managed(p_guild->id), bot(p_bot), exec_stop(exec_stop),
+      msg_cache(p_guild, &bot), cmd_handler(&bot, id, this),
       log_channel(&bot), welcomer(&bot) {
-        bot.log(dpp::ll_info, fmt::format("guild_state created for guild {}", guild_id));
+        bot.log(dpp::ll_info, fmt::format("guild_state created for guild {}", id));
     }
 
     dpp::cluster& bot;
     std::promise<void>& exec_stop;
-    snowflake guild_id;
     guild_user_msg_cache msg_cache;
     command_handler<dpp::slashcommand_t, dpp::user_context_menu_t, dpp::message_context_menu_t> cmd_handler;
     guild_channel_sender log_channel;

@@ -19,6 +19,7 @@ namespace chr = std::chrono;
 using dpp::snowflake;
 using dpp::message;
 using id_vec = const std::vector<snowflake>;
+using coc_vec = std::vector<dpp::command_option_choice>;
 
 template<class Rep, class Period>
 auto cur_msg_time(const std::chrono::duration<Rep, Period>& offset = 0s) {
@@ -40,7 +41,7 @@ struct guild_user_msg_cache {
 
     guild_user_msg_cache(dpp::guild* guild, dpp::cluster* ptr,
                          chr::seconds t = duration_cast<chr::seconds>(chr::weeks{1})) :
-            guild_id(guild->id), owner(ptr), save_time(t) {
+            save_time(t), owner(ptr), guild_id(guild->id) {
 
         auto channels = guild->channels;
 
@@ -119,20 +120,34 @@ enum Dojo_Belt: ::uint64_t {
     Black = 929080635904110663
 };
 
-constexpr Dojo_Belt plus_one (Dojo_Belt belt) {
-    switch (belt) {
-        case White:
-            return Yellow;
-        case Yellow:
-            return Green;
-        case Green:
-            return Blue;
-        case Blue:
-            return Red;
-        case Red:
-        case Black:
-            return Black;
-    }
+const static std::vector<Dojo_Belt> BELTS {
+    White, Yellow, Green, Blue, Red, Black
+};
+
+const static std::unordered_map<Dojo_Belt, Dojo_Belt> PLUS_ONE {
+    {White, Yellow},
+    {Yellow, Green},
+    {Green, Blue},
+    {Blue, Red},
+    {Red, Black},
+    {Black, Black}
+};
+
+const static std::unordered_map<Dojo_Belt, std::string> NAME {
+        {White, "White"},
+        {Yellow, "Yellow"},
+        {Green, "Green"},
+        {Blue, "Blue"},
+        {Red, "Red"},
+        {Black, "Black"}
+};
+
+inline coc_vec belt_options() {
+    coc_vec vec;
+    ran::transform(NAME, std::back_inserter(vec), [](auto& y){
+        return dpp::command_option_choice{y.second, dpp::command_value{static_cast<snowflake>(y.first)}};
+    });
+    return vec;
 }
 
 struct guild_dojo_info {
